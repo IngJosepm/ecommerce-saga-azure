@@ -1,0 +1,94 @@
+# Entorno local completo:     docker compose up -d --build
+# Solo infraestructura (IDE): docker compose up -d postgres rabbitmq
+
+x-service: &service
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
+  environment: &service-env
+    RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+    DB_USER: postgres
+    DB_PASSWORD: postgres
+    PORT: 8080
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./docker/postgres/init-databases.sql:/docker-entrypoint-initdb.d/init-databases.sql:ro
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"   # consola web: http://localhost:15672 (guest / guest)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      retries: 10
+
+  order-service:
+    <<: *service
+    build:
+      context: .
+      args:
+        MODULE: order-service
+    environment:
+      <<: *service-env
+      DB_URL: jdbc:postgresql://postgres:5432/orders
+
+  inventory-service:
+    <<: *service
+    build:
+      context: .
+      args:
+        MODULE: inventory-service
+    environment:
+      <<: *service-env
+      DB_URL: jdbc:postgresql://postgres:5432/inventory
+
+  payment-service:
+    <<: *service
+    build:
+      context: .
+      args:
+        MODULE: payment-service
+    environment:
+      <<: *service-env
+      DB_URL: jdbc:postgresql://postgres:5432/payments
+      GATEWAY_FAILURE_RATE: ${GATEWAY_FAILURE_RATE:-0.0}
+
+  # Único servicio expuesto, igual que en Azure (los demás usan ingress interno)
+  gateway:
+    restart: unless-stopped
+    build:
+      context: .
+      args:
+        MODULE: gateway
+    ports:
+      - "${GATEWAY_PORT:-9080}:8080"   # http://localhost:9080
+    environment:
+      PORT: 8080
+      ORDER_SERVICE_URL: http://order-service:8080
+      INVENTORY_SERVICE_URL: http://inventory-service:8080
+      PAYMENT_SERVICE_URL: http://payment-service:8080
+    depends_on:
+      - order-service
+      - inventory-service
+      - payment-service
+
+volumes:
+  postgres-data:

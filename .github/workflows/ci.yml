@@ -1,0 +1,118 @@
+# Pipeline CI/CD (gratis en repositorios públicos de GitHub)
+#
+#   backend  ─┐
+#             ├─► images (solo en push a main) ─► [fase 3: deploy a Azure]
+#   frontend ─┘
+#
+# Configuración opcional en GitHub → Settings → Secrets and variables → Actions:
+#   Secret   SONAR_TOKEN          token de SonarCloud (si no existe, el análisis se omite)
+#   Variable SONAR_ORGANIZATION   organización en SonarCloud
+#   Variable SONAR_PROJECT_KEY    clave del proyecto en SonarCloud
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend · tests + SonarCloud
+    runs-on: ubuntu-latest
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # SonarCloud necesita el historial para detectar código nuevo
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      # Unit tests + integración con Testcontainers (Docker ya viene en el runner)
+      - name: Compilar y probar
+        run: ./mvnw -B verify
+
+      - name: Análisis SonarCloud
+        if: env.SONAR_TOKEN != ''
+        run: >
+          ./mvnw -B org.sonarsource.scanner.maven:sonar-maven-plugin:sonar
+          -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
+          -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+
+      - name: Reportes de tests
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: surefire-reports
+          path: '**/target/surefire-reports/'
+
+  frontend:
+    name: Frontend · tests + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+  images:
+    name: Imagen · ${{ matrix.module }}
+    needs: [backend, frontend]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # publicar en GitHub Container Registry (ghcr.io)
+    strategy:
+      matrix:
+        module: [gateway, order-service, inventory-service, payment-service]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Nombre de la imagen (ghcr.io exige minúsculas)
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/ecommerce-${{ matrix.module }}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          build-args: MODULE=${{ matrix.module }}
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha,scope=${{ matrix.module }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.module }}

@@ -1,0 +1,16 @@
+server:
+  port: ${PORT:8082}
+
+spring:
+  application:
+    name: inventory-service
+  config:
+    import: optional:classpath:saga-defaults.yml
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/inventory}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:postgres}
+
+inventory:
+  reservation-ttl: 15m
+  expiry-check-interval: 60s

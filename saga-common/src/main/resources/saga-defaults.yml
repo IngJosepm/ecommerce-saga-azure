@@ -1,0 +1,38 @@
+# Configuración común de los microservicios de la Saga.
+# Cada servicio la importa con: spring.config.import=optional:classpath:saga-defaults.yml
+spring:
+  threads:
+    virtual:
+      enabled: true          # Java 21: peticiones HTTP, listeners y @Scheduled sobre Virtual Threads
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate     # el esquema lo gestiona Flyway, Hibernate solo lo valida
+  flyway:
+    locations: classpath:db/common,classpath:db/migration
+  datasource:
+    hikari:
+      maximum-pool-size: 5   # Neon Free admite pocas conexiones
+  mvc:
+    problemdetails:
+      enabled: true
+  rabbitmq:
+    addresses: ${RABBITMQ_URL:amqp://guest:guest@localhost:5672}
+    listener:
+      simple:
+        default-requeue-rejected: false   # tras agotar reintentos el mensaje va a la DLQ
+        retry:
+          enabled: true
+          max-attempts: 3
+          initial-interval: 1s
+          multiplier: 2
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true          # /actuator/health/liveness y /readiness para Container Apps
